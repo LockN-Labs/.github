@@ -17,10 +17,16 @@ on:
       working-directory:
         type: string
         default: '.'
+    secrets:
+      PACKAGES_TOKEN:
+        required: false
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -31,6 +37,15 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Add GitHub Packages NuGet source
+        run: |
+          dotnet nuget add source \
+            --username LockN-Labs \
+            --password ${{ secrets.PACKAGES_TOKEN || github.token }} \
+            --store-password-in-clear-text \
+            --name github \
+            "https://nuget.pkg.github.com/LockN-Labs/index.json" 2>/dev/null || true
 
       - name: Restore
         run: dotnet restore
