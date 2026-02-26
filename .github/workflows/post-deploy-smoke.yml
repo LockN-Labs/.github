@@ -14,10 +14,6 @@ on:
         description: 'Production base URL'
         type: string
         required: true
-    secrets:
-      SLACK_WEBHOOK:
-        required: false
-
 jobs:
   smoke:
     runs-on: ubuntu-latest
@@ -66,8 +62,5 @@ jobs:
           fi
 
       - name: Alert on failure
-        if: failure() && secrets.SLACK_WEBHOOK != ''
-        run: |
-          curl -sf -X POST "${{ secrets.SLACK_WEBHOOK }}" \
-            -H 'Content-Type: application/json' \
-            -d "{\"text\":\"🚨 POST-DEPLOY SMOKE FAILED for ${{ github.repository }} on ${{ inputs.base-url }}\"}" || true
+        if: failure()
+        run: echo "🚨 POST-DEPLOY SMOKE FAILED for ${{ github.repository }} on ${{ inputs.base-url }}"
