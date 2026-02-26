@@ -1,0 +1,130 @@
+name: Deploy Docker (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      compose-file:
+        description: Path to docker compose file
+        required: true
+        type: string
+      service-name:
+        description: Compose service/container name to deploy
+        required: true
+        type: string
+      health-url:
+        description: URL to verify deployment health
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, docker]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pull latest main
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Capture previous running image
+        id: previous
+        env:
+          SERVICE_NAME: ${{ inputs.service-name }}
+        run: |
+          set -euo pipefail
+          PREV_CONTAINER="$(docker ps -aq --filter "name=^/${SERVICE_NAME}$" | head -n 1 || true)"
+
+          if [ -n "$PREV_CONTAINER" ]; then
+            PREV_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$PREV_CONTAINER")"
+            PREV_IMAGE_REF="$(docker inspect --format '{{.Config.Image}}' "$PREV_CONTAINER")"
+            ROLLBACK_TAG="${PREV_IMAGE_REF}:rollback-${GITHUB_RUN_ID}"
+
+            docker image tag "$PREV_IMAGE_ID" "$ROLLBACK_TAG"
+
+            echo "prev_container=$PREV_CONTAINER" >> "$GITHUB_OUTPUT"
+            echo "prev_image_id=$PREV_IMAGE_ID" >> "$GITHUB_OUTPUT"
+            echo "prev_image_ref=$PREV_IMAGE_REF" >> "$GITHUB_OUTPUT"
+            echo "rollback_tag=$ROLLBACK_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "No existing container found for ${SERVICE_NAME}; rollback image unavailable"
+            echo "prev_container=" >> "$GITHUB_OUTPUT"
+            echo "prev_image_id=" >> "$GITHUB_OUTPUT"
+            echo "prev_image_ref=" >> "$GITHUB_OUTPUT"
+            echo "rollback_tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build service image
+        env:
+          COMPOSE_FILE: ${{ inputs.compose-file }}
+          SERVICE_NAME: ${{ inputs.service-name }}
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE" build "$SERVICE_NAME"
+
+      - name: Deploy service
+        env:
+          COMPOSE_FILE: ${{ inputs.compose-file }}
+          SERVICE_NAME: ${{ inputs.service-name }}
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE" up -d "$SERVICE_NAME"
+
+      - name: Health check
+        id: health
+        env:
+          HEALTH_URL: ${{ inputs.health-url }}
+        run: |
+          set -euo pipefail
+
+          for attempt in $(seq 1 20); do
+            if curl -fsS "$HEALTH_URL" > /dev/null; then
+              echo "healthy=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Health check attempt ${attempt}/20 failed for ${HEALTH_URL}; retrying..."
+            sleep 3
+          done
+
+          echo "healthy=false" >> "$GITHUB_OUTPUT"
+          echo "::error::Health checks failed for ${HEALTH_URL}"
+          exit 1
+
+      - name: Roll back on deployment failure
+        if: failure()
+        env:
+          COMPOSE_FILE: ${{ inputs.compose-file }}
+          SERVICE_NAME: ${{ inputs.service-name }}
+          PREV_IMAGE_REF: ${{ steps.previous.outputs.prev_image_ref }}
+          ROLLBACK_TAG: ${{ steps.previous.outputs.rollback_tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PREV_IMAGE_REF" ] || [ -z "$ROLLBACK_TAG" ]; then
+            echo "::warning::Rollback skipped: no previous image reference available"
+            exit 0
+          fi
+
+          echo "Restoring previous image tag ${PREV_IMAGE_REF} from ${ROLLBACK_TAG}"
+          docker image tag "$ROLLBACK_TAG" "$PREV_IMAGE_REF"
+
+          docker compose -f "$COMPOSE_FILE" stop "$SERVICE_NAME" || true
+          docker compose -f "$COMPOSE_FILE" rm -f "$SERVICE_NAME" || true
+          docker compose -f "$COMPOSE_FILE" up -d --no-build "$SERVICE_NAME"
+
+          echo "Rollback deployed. Verifying service health..."
+          for attempt in $(seq 1 20); do
+            if curl -fsS "${{ inputs.health-url }}" > /dev/null; then
+              echo "Rollback health check succeeded"
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "::error::Rollback health check failed"
+          exit 1
