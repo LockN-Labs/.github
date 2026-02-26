@@ -57,3 +57,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ inputs.platforms }}
+          build-args: |
+            NUGET_AUTH_TOKEN=${{ secrets.GITHUB_TOKEN }}
