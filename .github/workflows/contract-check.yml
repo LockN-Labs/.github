@@ -1,0 +1,91 @@
+# LockN Frontend-Backend Contract Check — Reusable Workflow
+# Verifies every frontend API call has a matching backend handler.
+# Origin: Apply intake prod failure (2026-02-26) — frontend called endpoints that didn't exist.
+name: Contract Check
+
+on:
+  workflow_call:
+    inputs:
+      frontend-dir:
+        type: string
+        default: 'src'
+      backend-dir:
+        type: string
+        default: '.'
+      frontend-extensions:
+        description: 'Comma-separated file extensions to scan in frontend'
+        type: string
+        default: 'ts,tsx,js,jsx'
+      backend-extensions:
+        description: 'Comma-separated file extensions to scan in backend'
+        type: string
+        default: 'cs'
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract frontend API calls
+        run: |
+          echo "🔍 Scanning frontend for API calls..."
+          INCLUDES=$(echo "${{ inputs.frontend-extensions }}" | sed 's/,/ --include=*./g; s/^/--include=*./')
+
+          grep -roh 'fetch(["`'"'"']\(/[^"`'"'"']*\)' ${{ inputs.frontend-dir }} \
+            $INCLUDES 2>/dev/null \
+            | sed "s/fetch(['\"\`]//g" \
+            | grep "^/api/" \
+            | sort -u > /tmp/frontend-apis.txt || true
+
+          COUNT=$(wc -l < /tmp/frontend-apis.txt)
+          echo "Found $COUNT frontend API calls:"
+          cat /tmp/frontend-apis.txt
+          echo "---"
+
+      - name: Extract backend handlers
+        run: |
+          echo "🔍 Scanning backend for API handlers..."
+          INCLUDES=$(echo "${{ inputs.backend-extensions }}" | sed 's/,/ --include=*./g; s/^/--include=*./')
+
+          # Minimal API style: MapPost("/api/...", ...)
+          grep -roh 'Map\(Post\|Get\|Put\|Delete\|Patch\)("[^"]*"' ${{ inputs.backend-dir }} \
+            $INCLUDES 2>/dev/null \
+            | sed 's/Map\(Post\|Get\|Put\|Delete\|Patch\)("//g; s/"//g' \
+            | sort -u > /tmp/backend-apis.txt || true
+
+          # Controller style: [HttpPost("/api/...")]
+          grep -roh '\[Http\(Post\|Get\|Put\|Delete\|Patch\)("[^"]*"' ${{ inputs.backend-dir }} \
+            $INCLUDES 2>/dev/null \
+            | sed 's/\[Http\(Post\|Get\|Put\|Delete\|Patch\)("//g; s/"//g' \
+            >> /tmp/backend-apis.txt || true
+
+          sort -u -o /tmp/backend-apis.txt /tmp/backend-apis.txt
+          COUNT=$(wc -l < /tmp/backend-apis.txt)
+          echo "Found $COUNT backend handlers:"
+          cat /tmp/backend-apis.txt
+          echo "---"
+
+      - name: Verify contract
+        run: |
+          echo "🔗 Checking frontend→backend contract..."
+          MISSING=0
+
+          while IFS= read -r api; do
+            [ -z "$api" ] && continue
+            BASE=$(echo "$api" | sed 's/\${[^}]*}/[^\/]*/g; s/?.*//; s/\/$//')
+            if grep -q "$BASE" /tmp/backend-apis.txt 2>/dev/null; then
+              echo "  ✅ $api → handler exists"
+            else
+              echo "  ❌ MISSING: $api — no backend handler found"
+              MISSING=$((MISSING + 1))
+            fi
+          done < /tmp/frontend-apis.txt
+
+          echo ""
+          if [ "$MISSING" -gt 0 ]; then
+            echo "⚠️  $MISSING frontend API call(s) have no matching backend handler!"
+            echo "Fix these before merging to prevent runtime errors."
+            exit 1
+          fi
+          echo "✅ All frontend API calls have matching backend handlers."

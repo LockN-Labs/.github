@@ -1,0 +1,36 @@
+# LockN Shared .NET CI — Reusable Workflow
+# Called by individual repos: uses: LockN-Labs/.github/.github/workflows/dotnet-ci.yml@main
+name: .NET CI
+
+on:
+  workflow_call:
+    inputs:
+      dotnet-version:
+        type: string
+        default: '9.0.x'
+      build-config:
+        type: string
+        default: 'Release'
+      test-verbosity:
+        type: string
+        default: 'normal'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration ${{ inputs.build-config }}
+
+      - name: Test
+        run: dotnet test --no-build --configuration ${{ inputs.build-config }} --verbosity ${{ inputs.test-verbosity }}

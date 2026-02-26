@@ -1,0 +1,89 @@
+# LockN Shared Integration Test — Reusable Workflow
+# Spins up docker-compose, runs smoke tests, tears down.
+# Requires: self-hosted runner with Docker access
+# Repo must provide: docker-compose.test.yml + .github/smoke-tests.sh
+name: Integration Test
+
+on:
+  workflow_call:
+    inputs:
+      compose-file:
+        type: string
+        default: 'docker-compose.test.yml'
+      health-endpoint:
+        type: string
+        default: 'http://localhost:8080/health'
+      health-timeout:
+        type: number
+        default: 60
+      working-directory:
+        type: string
+        default: '.'
+
+jobs:
+  integration:
+    runs-on: [self-hosted, linux, x64, docker]
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start services
+        run: docker compose -f ${{ inputs.compose-file }} up -d --build
+
+      - name: Wait for health
+        run: |
+          echo "⏳ Waiting for ${{ inputs.health-endpoint }}..."
+          for i in $(seq 1 ${{ inputs.health-timeout }}); do
+            if curl -sf "${{ inputs.health-endpoint }}" > /dev/null 2>&1; then
+              echo "✅ Service healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "❌ Service failed to become healthy after ${{ inputs.health-timeout }}s"
+          docker compose -f ${{ inputs.compose-file }} logs --tail=50
+          exit 1
+
+      - name: Run smoke tests
+        run: |
+          set -e
+          PASS=0
+          FAIL=0
+
+          run_test() {
+            local name="$1"
+            local cmd="$2"
+            echo -n "  Testing: $name ... "
+            if eval "$cmd" > /tmp/test-output.txt 2>&1; then
+              echo "✅ PASS"
+              PASS=$((PASS + 1))
+            else
+              echo "❌ FAIL"
+              cat /tmp/test-output.txt
+              FAIL=$((FAIL + 1))
+            fi
+          }
+
+          echo "🧪 Running integration smoke tests..."
+          echo ""
+
+          if [ -f .github/smoke-tests.sh ]; then
+            source .github/smoke-tests.sh
+          else
+            echo "⚠️  No .github/smoke-tests.sh found — running default health check only"
+            run_test "Health endpoint" "curl -sf ${{ inputs.health-endpoint }}"
+          fi
+
+          echo ""
+          echo "📊 Results: $PASS passed, $FAIL failed"
+
+          if [ "$FAIL" -gt 0 ]; then
+            exit 1
+          fi
+
+      - name: Teardown
+        if: always()
+        run: docker compose -f ${{ inputs.compose-file }} down -v --remove-orphans

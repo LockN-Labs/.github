@@ -1,0 +1,73 @@
+# LockN Post-Deploy Smoke Test — Reusable Workflow
+# Hits prod endpoints after deploy to verify they work.
+# Origin: Apply intake prod failure (2026-02-26) — "done" meant "code exists" not "feature works."
+name: Post-Deploy Smoke
+
+on:
+  workflow_call:
+    inputs:
+      smoke-script:
+        description: 'Path to smoke test script'
+        type: string
+        default: '.github/prod-smoke.sh'
+      base-url:
+        description: 'Production base URL'
+        type: string
+        required: true
+    secrets:
+      SLACK_WEBHOOK:
+        required: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run prod smoke tests
+        env:
+          BASE_URL: ${{ inputs.base-url }}
+        run: |
+          set -e
+          PASS=0
+          FAIL=0
+
+          run_test() {
+            local name="$1"
+            local cmd="$2"
+            echo -n "  Testing: $name ... "
+            if eval "$cmd" > /tmp/test-output.txt 2>&1; then
+              echo "✅ PASS"
+              PASS=$((PASS + 1))
+            else
+              echo "❌ FAIL"
+              cat /tmp/test-output.txt
+              FAIL=$((FAIL + 1))
+            fi
+          }
+
+          echo "🔥 Post-deploy smoke tests against $BASE_URL"
+          echo ""
+
+          if [ -f "${{ inputs.smoke-script }}" ]; then
+            source "${{ inputs.smoke-script }}"
+          else
+            echo "⚠️  No smoke script found at ${{ inputs.smoke-script }}"
+            run_test "Health check" "curl -sf ${BASE_URL}/health"
+          fi
+
+          echo ""
+          echo "📊 Results: $PASS passed, $FAIL failed"
+
+          if [ "$FAIL" -gt 0 ]; then
+            echo "::error::Post-deploy smoke tests FAILED — prod may be broken!"
+            exit 1
+          fi
+
+      - name: Alert on failure
+        if: failure() && secrets.SLACK_WEBHOOK != ''
+        run: |
+          curl -sf -X POST "${{ secrets.SLACK_WEBHOOK }}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"text\":\"🚨 POST-DEPLOY SMOKE FAILED for ${{ github.repository }} on ${{ inputs.base-url }}\"}" || true
