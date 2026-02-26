@@ -40,12 +40,13 @@ jobs:
 
       - name: Add GitHub Packages NuGet source
         run: |
+          dotnet nuget remove source github 2>/dev/null || true
           dotnet nuget add source \
             --username LockN-Labs \
             --password ${{ secrets.PACKAGES_TOKEN || github.token }} \
             --store-password-in-clear-text \
             --name github \
-            "https://nuget.pkg.github.com/LockN-Labs/index.json" 2>/dev/null || true
+            "https://nuget.pkg.github.com/LockN-Labs/index.json"
 
       - name: Restore
         run: dotnet restore
