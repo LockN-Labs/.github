@@ -10,7 +10,7 @@ on:
         default: '9.0.x'
       build-config:
         type: string
-        default: 'Release'
+        default: 'Debug'
       test-verbosity:
         type: string
         default: 'normal'
