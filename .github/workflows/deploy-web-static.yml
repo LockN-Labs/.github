@@ -1,0 +1,116 @@
+name: Deploy Web Static (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version
+        required: false
+        default: '22.x'
+        type: string
+      build-dir:
+        description: Build output directory
+        required: false
+        default: 'dist'
+        type: string
+      serve-dir:
+        description: Absolute directory used by web server
+        required: true
+        type: string
+      verify-url:
+        description: URL to verify after deploy
+        required: true
+        type: string
+      verify-grep:
+        description: Content that must be present at verify-url
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, docker]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pull latest main
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          npm ci || npm install
+
+      - name: Build site
+        run: |
+          set -euo pipefail
+          npm run build
+
+      - name: Backup currently served site
+        env:
+          SERVE_DIR: ${{ inputs.serve-dir }}
+        run: |
+          set -euo pipefail
+          BACKUP_DIR="${SERVE_DIR}.backup-${GITHUB_RUN_ID}"
+          echo "BACKUP_DIR=$BACKUP_DIR" >> "$GITHUB_ENV"
+
+          sudo mkdir -p "$SERVE_DIR"
+          if [ -d "$SERVE_DIR" ] && [ "$(ls -A "$SERVE_DIR" 2>/dev/null || true)" ]; then
+            sudo rm -rf "$BACKUP_DIR"
+            sudo mkdir -p "$BACKUP_DIR"
+            sudo rsync -a --delete "$SERVE_DIR/" "$BACKUP_DIR/"
+          else
+            sudo rm -rf "$BACKUP_DIR"
+            sudo mkdir -p "$BACKUP_DIR"
+          fi
+
+      - name: Deploy static build
+        env:
+          BUILD_DIR: ${{ inputs.build-dir }}
+          SERVE_DIR: ${{ inputs.serve-dir }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo "::error::Build output directory not found: $BUILD_DIR"
+            exit 1
+          fi
+
+          sudo mkdir -p "$SERVE_DIR"
+          sudo rsync -a --delete "$BUILD_DIR/" "$SERVE_DIR/"
+
+      - name: Verify deployment
+        env:
+          VERIFY_URL: ${{ inputs.verify-url }}
+          VERIFY_GREP: ${{ inputs.verify-grep }}
+        run: |
+          set -euo pipefail
+          curl -fsS "$VERIFY_URL" | grep -F "$VERIFY_GREP"
+
+      - name: Roll back on failure
+        if: failure()
+        env:
+          SERVE_DIR: ${{ inputs.serve-dir }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BACKUP_DIR:-}" ] || [ ! -d "$BACKUP_DIR" ]; then
+            echo "::warning::Rollback skipped: backup directory unavailable"
+            exit 0
+          fi
+
+          sudo mkdir -p "$SERVE_DIR"
+          sudo rsync -a --delete "$BACKUP_DIR/" "$SERVE_DIR/"
+
+          echo "Verifying rollback"
+          curl -fsS "${{ inputs.verify-url }}" | grep -F "${{ inputs.verify-grep }}"
