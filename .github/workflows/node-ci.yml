@@ -1,0 +1,60 @@
+# LockN Shared Node.js CI — Reusable Workflow
+# Called by individual repos: uses: LockN-Labs/.github/.github/workflows/node-ci.yml@main
+name: Node.js CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: '22.x'
+      package-manager:
+        description: 'npm or pnpm'
+        type: string
+        default: 'npm'
+      pnpm-version:
+        type: string
+        default: '10.x'
+      build-script:
+        type: string
+        default: 'build'
+      test-script:
+        type: string
+        default: 'test'
+      lint-script:
+        type: string
+        default: 'lint'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Setup pnpm
+        if: inputs.package-manager == 'pnpm'
+        run: |
+          corepack enable
+          corepack prepare pnpm@${{ inputs.pnpm-version }} --activate
+
+      - name: Install dependencies (npm)
+        if: inputs.package-manager == 'npm'
+        run: npm ci || npm install
+
+      - name: Install dependencies (pnpm)
+        if: inputs.package-manager == 'pnpm'
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: ${{ inputs.package-manager }} run ${{ inputs.build-script }} --if-present
+
+      - name: Test
+        run: ${{ inputs.package-manager }} run ${{ inputs.test-script }} --if-present
+
+      - name: Lint
+        run: ${{ inputs.package-manager }} run ${{ inputs.lint-script }} --if-present
