@@ -1,0 +1,134 @@
+name: AI Review
+
+on:
+  workflow_call:
+    inputs:
+      zen-url:
+        description: 'Zen API URL for AI review'
+        type: string
+        default: 'http://localhost:11460'
+
+jobs:
+  ai-review:
+    runs-on: [self-hosted, linux, x64, docker]
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt
+          # Truncate to 8000 chars for LLM context
+          head -c 8000 /tmp/pr-diff.txt > /tmp/pr-diff-truncated.txt
+          echo "diff_size=$(wc -c < /tmp/pr-diff.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: AI Review via Zen
+        id: review
+        env:
+          ZEN_URL: ${{ inputs.zen-url }}
+        run: |
+          DIFF=$(cat /tmp/pr-diff-truncated.txt)
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_BODY=$(echo '${{ github.event.pull_request.body }}' | head -c 1000)
+
+          PROMPT="You are a senior code reviewer for LockN Labs (.NET 9, Aspire, Wolverine, Marten stack).
+
+          Review this PR and score it on the LockN 9.81 Quality Gate scale (0.00-10.00):
+
+          **Scoring Rubric:**
+          - Correctness (25%): Logic errors, edge cases, null safety, async patterns
+          - Conventions (20%): LockN casing (capital L, capital N in ILockN*), naming, formatting
+          - Architecture (20%): Separation of concerns, dependency direction, Aspire patterns
+          - Security (15%): No secrets, input validation, auth checks
+          - Test Coverage (10%): Tests exist for new logic, edge cases covered
+          - Documentation (10%): XML docs on public APIs, README updates if needed
+
+          **Rules:**
+          - Composite score ≥ 9.81 → APPROVE
+          - Composite score < 9.81 → REQUEST CHANGES
+          - Any subscore < 8.00 → REJECT regardless of composite
+
+          PR Title: ${PR_TITLE}
+          PR Description: ${PR_BODY}
+
+          Diff:
+          ${DIFF}
+
+          Respond in this exact format:
+          CORRECTNESS: X.XX
+          CONVENTIONS: X.XX
+          ARCHITECTURE: X.XX
+          SECURITY: X.XX
+          TEST_COVERAGE: X.XX
+          DOCUMENTATION: X.XX
+          COMPOSITE: X.XX
+          VERDICT: APPROVE|REQUEST_CHANGES
+          SUMMARY: <one paragraph summary of findings>"
+
+          RESPONSE=$(curl -s -X POST "${ZEN_URL}/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\": \"zen-local\", \"messages\": [{\"role\": \"user\", \"content\": $(echo "$PROMPT" | jq -Rs .)}], \"temperature\": 0.3, \"max_tokens\": 1000}" \
+            | jq -r '.choices[0].message.content // "REVIEW_FAILED"')
+
+          echo "$RESPONSE" > /tmp/review-result.txt
+
+          # Extract composite score
+          COMPOSITE=$(echo "$RESPONSE" | grep -oP 'COMPOSITE:\s*\K[0-9.]+' || echo "0.00")
+          VERDICT=$(echo "$RESPONSE" | grep -oP 'VERDICT:\s*\K\w+' || echo "REQUEST_CHANGES")
+
+          echo "composite=$COMPOSITE" >> "$GITHUB_OUTPUT"
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+
+      - name: Post review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REVIEW=$(cat /tmp/review-result.txt)
+          COMPOSITE="${{ steps.review.outputs.composite }}"
+          VERDICT="${{ steps.review.outputs.verdict }}"
+
+          if [ "$VERDICT" = "APPROVE" ]; then
+            EMOJI="✅"
+            STATUS="approved"
+          else
+            EMOJI="⚠️"
+            STATUS="needs improvement"
+          fi
+
+          COMMENT="## ${EMOJI} AI Review — Score: ${COMPOSITE}/10.00
+
+          ${REVIEW}
+
+          ---
+          *LockN Quality Gate: 9.81 | [Scoring Rubric](https://github.com/LockN-Labs/.github)*"
+
+          gh pr comment ${{ github.event.pull_request.number }} --body "$COMMENT"
+
+      - name: Report status check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COMPOSITE="${{ steps.review.outputs.composite }}"
+          VERDICT="${{ steps.review.outputs.verdict }}"
+          SHA="${{ github.event.pull_request.head.sha }}"
+
+          if [ "$VERDICT" = "APPROVE" ]; then
+            STATE="success"
+            DESC="Score: ${COMPOSITE}/10.00 — Approved"
+          else
+            STATE="failure"
+            DESC="Score: ${COMPOSITE}/10.00 — Changes requested"
+          fi
+
+          gh api repos/${{ github.repository }}/statuses/${SHA} \
+            -f state="$STATE" \
+            -f description="$DESC" \
+            -f context="AI Review"

@@ -56,3 +56,17 @@ jobs:
 
       - name: Test
         run: dotnet test --no-build --configuration ${{ inputs.build-config }} --verbosity ${{ inputs.test-verbosity }}
+
+  ai-review:
+    if: github.event_name == 'pull_request'
+    uses: LockN-Labs/.github/.github/workflows/ai-review.yml@main
+    needs: build-and-test
+    secrets: inherit
+
+  qa-verification:
+    if: github.event_name == 'pull_request'
+    uses: LockN-Labs/.github/.github/workflows/qa-verification.yml@main
+    needs: build-and-test
+    with:
+      language: dotnet
+    secrets: inherit

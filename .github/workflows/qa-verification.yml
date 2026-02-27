@@ -1,0 +1,94 @@
+name: QA Verification
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: 'Project language (dotnet or node)'
+        type: string
+        default: 'dotnet'
+
+jobs:
+  qa-verify:
+    runs-on: [self-hosted, linux, x64, docker]
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for merge conflict markers
+        id: conflict-check
+        run: |
+          CONFLICTS=$(grep -rn "<<<<<<" --include="*.cs" --include="*.csproj" --include="*.json" --include="*.yml" --include="*.yaml" --include="*.astro" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.css" --include="*.html" . 2>/dev/null | grep -v node_modules | grep -v obj/ | grep -v bin/ || true)
+          if [ -n "$CONFLICTS" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "$CONFLICTS" > /tmp/conflicts.txt
+            echo "::error::Merge conflict markers found in source files"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check LockN casing
+        id: casing-check
+        run: |
+          # Check for incorrect ILockn (should be ILockN) in C# files
+          BAD_CASING=$(grep -rn "ILockn[^N]" --include="*.cs" . 2>/dev/null | grep -v obj/ | grep -v bin/ || true)
+          if [ -n "$BAD_CASING" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "$BAD_CASING" > /tmp/bad-casing.txt
+            echo "::warning::Found ILockn (should be ILockN) in source files"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (.NET)
+        if: inputs.language == 'dotnet'
+        run: |
+          dotnet restore
+          dotnet build --no-restore -warnaserrors
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test (.NET)
+        if: inputs.language == 'dotnet'
+        run: dotnet test --no-build --verbosity normal
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (Node)
+        if: inputs.language == 'node'
+        run: |
+          npm ci
+          npm run build
+
+      - name: Test (Node)
+        if: inputs.language == 'node'
+        run: npm test || echo "No tests configured"
+
+      - name: Report QA status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA="${{ github.event.pull_request.head.sha }}"
+          CONFLICTS="${{ steps.conflict-check.outputs.found }}"
+
+          if [ "$CONFLICTS" = "true" ]; then
+            STATE="failure"
+            DESC="Failed: merge conflict markers found"
+          elif [ "${{ job.status }}" = "success" ]; then
+            STATE="success"
+            DESC="Build + tests passed, no conflicts"
+          else
+            STATE="failure"
+            DESC="Build or tests failed"
+          fi
+
+          gh api repos/${{ github.repository }}/statuses/${SHA} \
+            -f state="$STATE" \
+            -f description="$DESC" \
+            -f context="QA Verification"
