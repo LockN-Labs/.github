@@ -72,4 +72,4 @@ jobs:
           token: ${{ secrets.LOCKN_DISPATCH_TOKEN }}
           repository: LockN-Labs/lockn-ai
           event-type: module-update
-          client-payload: '{"service": "${{ inputs.image-name || github.event.repository.name }}", "tag": "sha-${{ steps.meta.outputs.version }}", "repo": "${{ github.repository }}"}'
+          client-payload: '{"service": "${{ inputs.image-name || github.event.repository.name }}", "tag": "${{ steps.meta.outputs.version }}", "repo": "${{ github.repository }}"}'
