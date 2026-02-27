@@ -18,6 +18,10 @@ on:
       platforms:
         type: string
         default: 'linux/amd64'
+      build-args:
+        description: 'Additional build args'
+        type: string
+        default: ''
 
 env:
   REGISTRY: ghcr.io
@@ -44,7 +48,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image-name || github.event.repository.name }}
           tags: |
-            type=sha,prefix=
+            type=sha,prefix=sha-
             type=ref,event=branch
             type=raw,value=latest,enable={{is_default_branch}}
 
@@ -59,3 +63,13 @@ jobs:
           platforms: ${{ inputs.platforms }}
           build-args: |
             NUGET_AUTH_TOKEN=${{ secrets.GITHUB_TOKEN }}
+            ${{ inputs.build-args }}
+
+      - name: Notify Aspire orchestrator
+        if: success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.LOCKN_DISPATCH_TOKEN }}
+          repository: LockN-Labs/lockn-ai
+          event-type: module-update
+          client-payload: '{"service": "${{ inputs.image-name || github.event.repository.name }}", "tag": "sha-${{ steps.meta.outputs.version }}", "repo": "${{ github.repository }}"}'
