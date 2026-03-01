@@ -10,7 +10,7 @@ on:
 
 jobs:
   ai-review:
-    runs-on: [self-hosted, linux, x64, docker]
+    runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
